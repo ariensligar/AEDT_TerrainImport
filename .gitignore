@@ -1,0 +1,9 @@
+*.aedtresults/
+example_projects/*.lock
+__pycache__/
+/**/__pycache__/
+**/__pycache__/
+/__pycache__/
+/tmp_cache/
+*.stl
+batch.log

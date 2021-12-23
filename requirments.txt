@@ -1,0 +1,8 @@
+numpy==1.21.2
+matplotlib
+SRTM.py
+pyvista
+utm
+spyder-kernels
+pyaedt
+pyshp
