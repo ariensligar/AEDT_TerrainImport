@@ -9,32 +9,81 @@ that the desktop is open, uses current active project
 """
 
 from pyaedt import Hfss
-#from pyaedt import Desktop
+from pyaedt import Desktop
+import json
 import os
 import uuid
+import fnmatch
+import numpy as np
+
+
 
 class AEDTutils:
-    def __init__(self,aedtapp,project_name='project1',design_name='design1',version ="2021.2"):
+    def __init__(self,project_name='project1',design_name='design1',version ="2022.1",path='./'):
         
-        self.aedtapp = aedtapp
-        projects = self.aedtapp.project_list
-        if project_name in projects:
-            self.aedtapp.odesktop.SetActiveProject(project_name)
+        if not os.path.exists('./tmp_cache/'):
+            os.makedirs('./tmp_cache/')
+        self.save_path = './tmp_cache/'
         
-            designs = self.aedtapp.design_list
-            orig_design_name=design_name
-            increment=1
-            while  design_name in designs:
-                design_name = orig_design_name+str(increment)
-                increment+=1
-        else:
-            self.aedtapp.create_new_project(project_name)
-            project_name = self.aedtapp.project_name
-        self.oDesign = self.aedtapp.odesign
-        oEditor = self.oDesign.SetActiveEditor("3D Modeler")
-        oEditor.SetModelUnits(["NAME:Units Parameter","Units:=", "meter","Rescale:=", False])
-    
+        self.aedtapp = None
+        with Desktop(specified_version=version,non_graphical=False,new_desktop_session=False,close_on_exit=False) as d:
 
+            
+            if project_name in d.project_list():
+                orig_design_name=design_name
+                increment=1
+                while design_name in d.design_list(project_name):
+                    design_name = orig_design_name+str(increment)
+                    increment+=1
+                        
+        self.project_name = project_name
+        self.design_name = design_name
+        self.version = version
+        self.path = path
+
+    def create_aedt_proj(self,scn_elements):
+
+        #instance of HFSS
+        with Hfss(projectname=self.project_name,
+                      designname=self.design_name,
+                      non_graphical=False, 
+                      new_desktop_session=False,
+                      specified_version=self.version,
+                      solution_type='SBR+') as aedtapp:
+            
+            self.aedtapp = aedtapp
+            self.setup_design()
+            self.initalize_aedt_parts(scn_elements)
+            
+
+        
+
+
+    def initalize_aedt_parts(self,scene_elements):
+        #add materials
+
+        #self.add_all_material()
+        
+        
+        for part in scene_elements:
+            stl_filename =self.path + scene_elements[part]['file_name']
+            print(f"importing {stl_filename}")
+            mesh_import = self.import_stl(stl_filename,cs_name='Global')
+
+            
+   
+        
+
+
+
+
+    
+    def setup_design(self):
+        oEditor = self.aedtapp.odesign.SetActiveEditor("3D Modeler")
+        oEditor.SetModelUnits(["NAME:Units Parameter","Units:=", "meter","Rescale:=", False])
+        self.time_var_name = "time_var"
+        self.time = 0
+        self.add_or_edit_variable(self.time_var_name,str(self.time)+'s')
                 
 
     def release_desktop(self):
@@ -52,21 +101,120 @@ class AEDTutils:
         li_dif = [i for i in li1 + li2 if i not in li1 or i not in li2] 
         return li_dif 
     
-    def add_material(self,mat_name,er=1,tand=0,cond=0):
+    def add_material(self,mat_name,er,tand,cond):
         """
         adds a material to HFSS with the properties of permitivity and dielectric
         loss tanget only. If the material already exists, it will update it with
         the new properties
         """
-        material = self.aedtapp.materials.add_material(mat_name)
-        material.permittivity.value = er
-        material.dielectric_loss_tangent.value = tand
-        material.conductivity.value = cond
+        
+        oDefinitionManager = self.aedtapp.oproject.GetDefinitionManager()
 
+        #existing_materials = oDefinitionManager.GetInUseProjectMaterialNames()
+
+        if oDefinitionManager.DoesMaterialExist(mat_name):
+            oDefinitionManager.EditMaterial(mat_name, 
+            [
+                "NAME:"+mat_name,
+                "CoordinateSystemType:=", "Cartesian",
+                "BulkOrSurfaceType:="    , 1,
+                [
+                    "NAME:PhysicsTypes",
+                    "set:="            , ["Electromagnetic"]
+                ],
+                "permittivity:="    , str(er),
+                "dielectric_loss_tangent:=", str(tand),
+                "bulk_conductivity:=", str(cond)
+            ])
+        else:
+            oDefinitionManager.AddMaterial(
+                [
+                    "NAME:"+mat_name,
+                    "CoordinateSystemType:=", "Cartesian",
+                    "BulkOrSurfaceType:="    , 1,
+                    [
+                        "NAME:PhysicsTypes",
+                        "set:="            , ["Electromagnetic"]
+                    ],
+                    "permittivity:="    , str(er),
+                    "dielectric_loss_tangent:=", str(tand),
+                    "bulk_conductivity:=", str(cond)
+                ])
+    def add_all_material(self):
+        """
+        adds a material to HFSS with the properties of permitivity and dielectric
+        loss tanget only. If the material already exists, it will update it with
+        the new properties
+        """
+        
+        with open('./Lib/materials.json') as f:
+            materials = json.load(f)
+        
+
+        for mat_name in materials['materials']:
+            
+            material_values = materials['materials'][mat_name]
+
+
+            # ToDo need to support multi layered dielectrics
+            t=1;er_real=1;er_im=0;mu_real=1;mu_imag=0;cond=0
+            if 'thickness' in material_values.keys():
+                t = material_values['thickness']
+            if 'relEpsReal' in material_values.keys():
+                er_real = material_values['relEpsReal']
+            if 'relEpsImag' in material_values.keys():
+                er_im = material_values['relEpsImag']
+            if 'relMuReal' in material_values.keys():
+                mu_real = material_values['relMuReal']
+            if 'relMuImag' in material_values.keys():
+                mu_imag= material_values['relMuImag']
+            if 'conductivity' in material_values.keys():
+                cond = material_values['conductivity']
+
+            material_str = f'DielectricLayers {t},{er_real},{er_im},{mu_real},{mu_imag},{cond}'
+            if 'backing' in material_values.keys():
+                backing_mat = material_values['backing']
+                material_str = f'{material_str}  {backing_mat}'
+            if 'roughness' in material_values.keys() and 'height_standard_dev' in material_values.keys():
+                roughness= material_values['roughness']
+                std_dev = material_values['height_standard_dev']
+    
+            tand = abs(er_im/er_real)
+            if mat_name =='pec':
+                pass
+            elif mat_name =='absorber':
+                pass
+            else:
+                print('adding material: ' + mat_name)
+                self.add_material(mat_name,er_real,tand,cond)
+        
     def assign_material(self,obj_names,material):
         oEditor = self.aedtapp.odesign.SetActiveEditor("3D Modeler")
         if isinstance(obj_names, list):
             for each in obj_names:
+                vol = oEditor.GetObjectVolume(each)
+                if vol!=0.0:
+                    oEditor.ChangeProperty(
+                        [
+                            "NAME:AllTabs",
+                            [
+                                "NAME:Geometry3DAttributeTab",
+                                [
+                                    "NAME:PropServers", 
+                                    each
+                                ],
+                                [
+                                    "NAME:ChangedProps",
+                                    [
+                                        "NAME:Material",
+                                        "Value:="        , "\"" + material + "\""
+                                    ]
+                                ]
+                            ]
+                        ])
+        else:
+            vol = oEditor.GetObjectVolume(obj_names)
+            if vol!=0.0:
                 oEditor.ChangeProperty(
                     [
                         "NAME:AllTabs",
@@ -74,7 +222,7 @@ class AEDTutils:
                             "NAME:Geometry3DAttributeTab",
                             [
                                 "NAME:PropServers", 
-                                each
+                                obj_names
                             ],
                             [
                                 "NAME:ChangedProps",
@@ -85,25 +233,6 @@ class AEDTutils:
                             ]
                         ]
                     ])
-        else:
-            oEditor.ChangeProperty(
-                [
-                    "NAME:AllTabs",
-                    [
-                        "NAME:Geometry3DAttributeTab",
-                        [
-                            "NAME:PropServers", 
-                            obj_names
-                        ],
-                        [
-                            "NAME:ChangedProps",
-                            [
-                                "NAME:Material",
-                                "Value:="        , "\"" + material + "\""
-                            ]
-                        ]
-                    ]
-                ])
         
     def assign_boundary(self,objects,material,bc_name="layered_bc1"):
         """
@@ -188,15 +317,60 @@ class AEDTutils:
 
         #set all antenna ports with the name 'tx' in them to be transmitters and similiar for 'rx'
         oModule.SetSBRTxRxSettings(    all_tx_rx_lists)
-    def insert_parametric_antenna(self,name,beamwidth_el,beamwidth_az,polarization,cs="Global"):
+    def insert_antenna(self,name,ffd_file =None, beamwidth_el=None,beamwidth_az=None,polarization='Vertical',cs="Global"):
         """
         this creates a single parmetric antenna component and inserts into coordinate system
 
         returns name of inserted antenna
         """
         uid = uuid.uuid4()
-
         oEditor = self.aedtapp.odesign.SetActiveEditor("3D Modeler")
+        previous_def_name = oEditor.Get3DComponentDefinitionNames()
+
+        ###################
+        #
+        # TEMPORARY, FFD WITH SINGLE FREQ POINT WILL NOT WORK IN AEDT
+        # MOST  FFD USED FOR RTR ARE SINGLE POINTS, FOR NW JUST USE BEAMWIDTH
+        ##################
+        if ffd_file is not None:
+            ffd_file = None
+            beamwidth_el = 120
+            beamwidth_az = 120
+        # 
+        # REMOVE WHEN FIXED
+        #####################
+        if ffd_file is not None:
+            ffd_file = os.path.abspath(ffd_file)
+            ant_type = 'File Based Antenna'
+            map_instance_param = 'NotVariable'
+            ant_def =   [
+            			"NAME:NativeComponentDefinitionProvider",
+            			"Type:="		, "File Based Antenna",
+            			"Unit:="		, "meter",
+            			"Is Parametric Array:="	, False,
+            			"Size:="		, "1meter",
+            			"MatchedPortImpedance:=", "50ohm",
+            			"Representation:="	, "Far Field",
+            			"ExternalFile:="	, ffd_file
+                        ]
+        
+        else:
+            ant_type = 'Parametric Beam'
+            map_instance_param = 'DesignVariable'
+            ant_def = [
+                        "NAME:NativeComponentDefinitionProvider",
+                        "Type:="        , ant_type,
+                        "Unit:="        , "meter",
+                        "Is Parametric Array:="    , False,
+                        "Size:="        , "0.1meter",
+                        "MatchedPortImpedance:=", "50ohm",
+                        "Polarization:="    , polarization,
+                        "Representation:="    , "Far Field",
+                        "Vertical BeamWidth:="    , f'{beamwidth_el}deg',
+                        "Horizontal BeamWidth:=", f'{beamwidth_az}deg'
+                        ]
+            
+        
 
         oEditor.InsertNativeComponent(
             [
@@ -221,7 +395,7 @@ class AEDTutils:
                     "Help URL:="        , "",
                     "Version:="        , "1.0",
                     "Notes:="        , "",
-                    "IconType:="        , "Parametric Beam"
+                    "IconType:="        , ant_type
                 ],
                 [
                     "NAME:GeometryDefinitionParameters",
@@ -241,25 +415,14 @@ class AEDTutils:
                         "NAME:VariableOrders"
                     ]
                 ],
-                "MapInstanceParameters:=", "DesignVariable",
+                "MapInstanceParameters:=", map_instance_param,
                 "UniqueDefinitionIdentifier:=", str(uid),
                 "OriginFilePath:="    , "",
                 "IsLocal:="        , False,
                 "ChecksumString:="    , "",
                 "ChecksumHistory:="    , [],
                 "VersionHistory:="    , [],
-                [
-                    "NAME:NativeComponentDefinitionProvider",
-                    "Type:="        , "Parametric Beam",
-                    "Unit:="        , "meter",
-                    "Is Parametric Array:="    , False,
-                    "Size:="        , "0.1meter",
-                    "MatchedPortImpedance:=", "50ohm",
-                    "Polarization:="    , polarization,
-                    "Representation:="    , "Far Field",
-                    "Vertical BeamWidth:="    , beamwidth_el,
-                    "Horizontal BeamWidth:=", beamwidth_az
-                ],
+                ant_def,
                 [
                     "NAME:InstanceParameters",
                     "GeometryParameters:="    , "",
@@ -267,11 +430,20 @@ class AEDTutils:
                     "DesignParameters:="    , ""
                 ]
             ])
-        return name
+        
+        curr_def_name = oEditor.Get3DComponentDefinitionNames()
+        def_name = self.diff(curr_def_name,previous_def_name) #get the current 3D component name
+        instance = oEditor.Get3DComponentInstanceNames(def_name[0])[0]
+        print(instance)
+        return instance
+    
+    
+
+        
     def import_stl(self,file_name,cs_name='Global'):
         self.aedtapp.modeler.set_working_coordinate_system(cs_name)
         full_stl_path = os.path.abspath(file_name)
-        oEditor = self.oDesign.SetActiveEditor("3D Modeler")
+        oEditor = self.aedtapp.odesign.SetActiveEditor("3D Modeler")
         all_objects_before_import = oEditor.GetMatchedObjectName("*")
         oEditor.Import(
             [
@@ -300,38 +472,61 @@ class AEDTutils:
         return name_of_objects_imported
 
         
-    def convert_to_3d_comp(self,name,cs_name):
-        oEditor = self.oDesign.SetActiveEditor("3D Modeler")
+    def convert_to_3d_comp(self,name,cs_name,comp_name='comp1'):
+        
+        oModule = self.aedtapp.odesign.GetModule("BoundarySetup")
+        
+        #reutrns boundaries in format ['name',boundary type, 'name2', boundary type]
+        all_boundaries = oModule.GetBoundaries()
+        all_boundaries = all_boundaries[::2]
+        #becuase I need boundaries to create 3D component, no easy way to get
+        #bondaries only associated with this part, so I will just assume
+        #based on previous functions that any boundary created with this part will
+        #contain the part name.
+        boundaries_to_include = []
+
+        for bc in all_boundaries:
+            if fnmatch.fnmatch(bc, comp_name+'*'):
+                boundaries_to_include.append(bc)
+        
+        oEditor = self.aedtapp.odesign.SetActiveEditor("3D Modeler")
+        
+        previous_def_name = oEditor.Get3DComponentDefinitionNames()
         oEditor.ReplaceWith3DComponent(
-            [
-                "NAME:ReplaceData",
-                "ComponentName:="    , name,
-                "Company:="        , "",
-                "Company URL:="        , "",
-                "Model Number:="    , "",
-                "Help URL:="        , "",
-                "Version:="        , "1.0",
-                "Notes:="        , "",
-                "IconType:="        , "",
-                "Owner:="        , "Arien Sligar",
-                "Email:="        , "",
-                "Date:="        , "11:20:05 AM  Dec 03, 2021",
-                "HasLabel:="        , False,
-                "IncludedParts:="    , [name],
-                "HiddenParts:="        , [],
-                "IncludedCS:="        , [cs_name],
-                "ReferenceCS:="        , cs_name,
-                "IncludedParameters:="    , [],
-                "IncludedDependentParameters:=", [],
-                "ParameterDescription:=", []
-            ], 
-            [
-                "NAME:DesignData"
-            ], 
-            [
-                "NAME:ImageFile",
-                "ImageFile:="        , ""
-            ])
+                [
+                    "NAME:ReplaceData",
+                    "ComponentName:="    , comp_name,
+                    "Company:="        , "",
+                    "Company URL:="        , "",
+                    "Model Number:="    , "",
+                    "Help URL:="        , "",
+                    "Version:="        , "1.0",
+                    "Notes:="        , "",
+                    "IconType:="        , "",
+                    "Owner:="        , "Arien Sligar",
+                    "Email:="        , "",
+                    "Date:="        , "11:20:05 AM  Dec 03, 2021",
+                    "HasLabel:="        , False,
+                    "IncludedParts:="    , name,
+                    "HiddenParts:="        , [],
+                    "IncludedCS:="        , [cs_name],
+                    "ReferenceCS:="        , cs_name,
+                    "IncludedParameters:="    , [],
+                    "IncludedDependentParameters:=", [],
+                    "ParameterDescription:=", []
+                ], 
+                [
+                    "NAME:DesignData",
+                    "Boundaries:="		, boundaries_to_include
+                ], 
+                [
+                    "NAME:ImageFile",
+                    "ImageFile:="        , ""
+                ])
+        curr_def_name = oEditor.Get3DComponentDefinitionNames()
+        def_name = self.diff(curr_def_name,previous_def_name) #get the current 3D component name
+        instances = oEditor.Get3DComponentInstanceNames(def_name[0])
+        return instances #
     
     def add_or_edit_variable(self,name,value):
         self.aedtapp[name]=value
@@ -351,17 +546,17 @@ class AEDTutils:
         None.
         '''
         
-        oDesign = self.aedtapp.odesign    
+
         temp_data = ["NAME:Coordinates"]
         for each in data:
             temp_data.append(["NAME:Coordinate","X:=", float(each[0]),"Y:=",
                 float(each[1])])        
         ds = ["NAME:"+ name,temp_data]
     
-        if oDesign.HasDataset(name) == True:
-            oDesign.EditDataset(name,ds)
+        if self.aedtapp.odesign.HasDataset(name) == True:
+            self.aedtapp.odesign.EditDataset(name,ds)
         else:
-            oDesign.AddDataset(ds)
+            self.aedtapp.odesign.AddDataset(ds)
     
     def move(self,object_name,pos_ds_names,reference_cs='Global'):
         if pos_ds_names:
@@ -377,7 +572,7 @@ class AEDTutils:
                z=f"pwl({pos_ds_names['z']},{self.time_var_name})"
             else:
                z='0'
-        oEditor = self.oDesign.SetActiveEditor("3D Modeler")
+        oEditor = self.aedtapp.odesign.SetActiveEditor("3D Modeler")
         self.aedtapp.modeler.set_working_coordinate_system(reference_cs)
         oEditor.Move(
             [
@@ -391,11 +586,33 @@ class AEDTutils:
                 "TranslateVectorY:="    , y,
                 "TranslateVectorZ:="    , z
             ])
-        
+       
+    def move_3dcomp(self,name,vector,units='meter'):
+         """
+         used for moving any 3D component along a vector
+         mainly used to offset a Rx antenna lambda/2 away
+         """
+         vec_x = vector[0]
+         vec_y = vector[1]
+         vec_z = vector[2]
+ 
+         oEditor = self.aedtapp.odesign.SetActiveEditor("3D Modeler")
+         oEditor.Move(
+             [
+                 "NAME:Selections",
+                 "Selections:="        , name,
+                 "NewPartsModelFlag:="    , "Model"
+             ],
+             [
+                 "NAME:TranslateParameters",
+                 "TranslateVectorX:="    , str(vec_x)+units,
+                 "TranslateVectorY:="    , str(vec_y)+units,
+                 "TranslateVectorZ:="    , str(vec_z)+units
+             ])
     def rotate(self,object_name,rot_ds_name,axis='X',reference_cs='Global'):
         rotate=f"pwl({rot_ds_name},{self.time_var_name})*1deg"
 
-        oEditor = self.oDesign.SetActiveEditor("3D Modeler")
+        oEditor = self.aedtapp.odesign.SetActiveEditor("3D Modeler")
         self.aedtapp.modeler.set_working_coordinate_system(reference_cs)
         oEditor.Rotate(
         [
@@ -408,47 +625,18 @@ class AEDTutils:
             "RotateAxis:="        , axis,
             "RotateAngle:="        , rotate
         ])
-    def create_cs(self,cs_name,pos=[0,0,0],euler=[0,0,0],reference_cs='Global',order='ZYZ'):
-       oEditor = self.oDesign.SetActiveEditor("3D Modeler")
-       
-       self.aedtapp.modeler.set_working_coordinate_system(reference_cs)
-       
-       exisiting_cs = oEditor.GetCoordinateSystems()
-       
-       orig_name = cs_name
-       incrment = 1
-       while cs_name in exisiting_cs:
-           cs_name = orig_name + '_'+str(incrment)
-           incrment+=1
-       else: #creates new CS 
 
-           oEditor.CreateRelativeCS(
-               [
-                   "NAME:RelativeCSParameters",
-                   "Mode:="        , "Euler Angle "+ order,
-                   "OriginX:="        , str(pos[0]),
-                   "OriginY:="        , str(pos[1]),
-                   "OriginZ:="        , str(pos[2]),
-                   "Psi:="            , str(euler[0]) + 'deg',
-                   "Theta:="        , str(euler[1]) + 'deg',
-                   "Phi:="            , str(euler[2]) + 'deg'
-               ], 
-               [
-                   "NAME:Attributes",
-                   "Name:="        , cs_name
-               ])
-
-
-       self.aedtapp.modeler.set_working_coordinate_system(cs_name)
-       return cs_name
    
     
     def create_cs_dataset(self,cs_name,pos_ds_names=None,euler_ds_names=None,reference_cs='Global',order='ZYZ'):
-        oEditor = self.oDesign.SetActiveEditor("3D Modeler")
+        oEditor = self.aedtapp.odesign.SetActiveEditor("3D Modeler")
         
         self.aedtapp.modeler.set_working_coordinate_system(reference_cs)
         
         exisiting_cs = oEditor.GetCoordinateSystems()
+        
+        if cs_name in exisiting_cs:
+            return cs_name
         
         if pos_ds_names:
             if 'x' in pos_ds_names.keys():
@@ -512,13 +700,23 @@ class AEDTutils:
         return cs_name
 
 
-    def insert_setup(self,simulation_params,setup_name = "Setup1"):
+    def insert_setup(self,simulation_params=None,setup_name = "Setup1"):
         """
         insert a solution setup, these settings can be modified as needed
         """
-        oModule = self.oDesign.GetModule("AnalysisSetup")
+        oModule = self.aedtapp.odesign.GetModule("AnalysisSetup")
 
-
+        if simulation_params is None:
+            simulation_params = {}
+            simulation_params['sol_freq'] =28.0
+            simulation_params['range_res'] =1
+            simulation_params['range_period'] =100
+            simulation_params['vel_res'] =1
+            simulation_params['vel_min'] =-20
+            simulation_params['vel_max'] =20
+            simulation_params['ray_density'] =0.1
+            simulation_params['bounces'] =3
+            
         oModule.InsertSetup("HfssDriven", 
             [
                 "NAME:"+ setup_name,
@@ -530,26 +728,35 @@ class AEDTutils:
                 "IsSbrRangeDoppler:="    , True,
                 "SbrRangeDopplerWaveformType:=", "PulseDoppler",
                 "SbrRangeDopplerTimeVariable:=", self.time_var_name,
-                "SbrRangeDopplerCenterFreq:=", f"{simulation_params['sol_freq']}GHz",
+                "SbrRangeDopplerCenterFreq:=", f"{simulation_params['sol_freq']}",
                 "SbrRangeDopplerRangeResolution:=", f"{simulation_params['range_res']}meter",
                 "SbrRangeDopplerRangePeriod:=", f"{simulation_params['range_period']}meter",
                 "SbrRangeDopplerVelocityResolution:=", f"{simulation_params['vel_res']}m_per_sec",
                 "SbrRangeDopplerVelocityMin:=", f"{simulation_params['vel_min']}m_per_sec",
                 "SbrRangeDopplerVelocityMax:=", f"{simulation_params['vel_max']}m_per_sec",
                 "DopplerRayDensityPerWavelength:=", simulation_params['ray_density'],
-                "MaxNumberOfBounces:="    , simulation_params['bounces']
+                "MaxNumberOfBounces:="    , simulation_params['bounces'],
+                "FastFrequencyLooping:=", False
             ])
 
         return setup_name
     
-    def insert_parametric_sweep(self,time_start,time_stop,time_step,setup_name):
+    def insert_parametric_sweep(self,time_start=None,time_stop=None,time_step=None,setup_name='Setup1'):
             """
             create parametric sweep setup for the time values specified in the file
             exported from scanner for each time step
 
             returns name of parametric sweep
             """
-            oModule = self.oDesign.GetModule("Optimetrics")
+            
+            if time_start is None:
+                time_start = self.time_stamps[0]
+            if time_stop is None:
+                time_stop = self.time_stamps[-1]
+            if time_step is None:
+                time_step = self.time_stamps[1]-self.time_stamps[0]
+                
+            oModule = self.aedtapp.odesign.GetModule("Optimetrics")
             sweep_str = "LIN " + str(time_start) + "s " + str(time_stop) + "s " + str(time_step) + "s"
             para_sweep_name = "Full_Time_Sweep"
             original_name = para_sweep_name
@@ -558,7 +765,7 @@ class AEDTutils:
             while para_sweep_name in all_para_setup_names:
                 para_sweep_name = original_name + str(n)
                 n+=1
-            oModule = self.oDesign.GetModule("Optimetrics")
+            oModule = self.aedtapp.odesign.GetModule("Optimetrics")
             oModule.InsertSetup("OptiParametric", 
                 [
                     "NAME:"+para_sweep_name,
@@ -590,3 +797,150 @@ class AEDTutils:
                 ])
 
             return para_sweep_name
+        
+        
+    def assign_color(self,object_names,color=None):
+        """
+        Assign a  color to an imported object, used for
+        the enviroment so all parts of enciroment don't look identical color,
+        if color is None, a random color will be assigned
+        """
+
+        oEditor = self.aedtapp.odesign.SetActiveEditor("3D Modeler")
+        if isinstance(object_names, list):
+            for each in object_names:
+                oEditor.ChangeProperty(
+                    [
+                        "NAME:AllTabs",
+                        [
+                            "NAME:Geometry3DAttributeTab",
+                            [
+                                "NAME:PropServers",
+                                each
+                            ],
+                            [
+                                "NAME:ChangedProps",
+                                [
+                                    "NAME:Color",
+                                    "R:="            , np.random.randint(0,255),
+                                    "G:="            , np.random.randint(0,255),
+                                    "B:="            , np.random.randint(0,255)
+                                ]
+                            ]
+                        ]
+                    ])
+        else:
+            oEditor.ChangeProperty(
+                [
+                    "NAME:AllTabs",
+                    [
+                        "NAME:Geometry3DAttributeTab",
+                        [
+                            "NAME:PropServers",
+                            object_names
+                        ],
+                        [
+                            "NAME:ChangedProps",
+                            [
+                                "NAME:Color",
+                                "R:="            , np.random.randint(0,255),
+                                "G:="            , np.random.randint(0,255),
+                                "B:="            , np.random.randint(0,255)
+                            ]
+                        ]
+                    ]
+                ])
+            
+    def group(self,group_name,object_to_group):
+        """
+        creates a group in the 3D modeler based on the
+        objects listed. Help organize the modeler tree
+        """
+        oEditor = self.aedtapp.odesign.SetActiveEditor("3D Modeler")
+        #input expects a string, convert list to comma deliminted string
+        if isinstance(object_to_group, list):
+            objects_string = ','.join(object_to_group )
+        assigned_name = oEditor.CreateGroup(
+            [
+                "NAME:GroupParameter",
+                "ParentGroupID:="    , "Model",
+                "Parts:="        , "",
+                "SubmodelInstances:="    , objects_string,
+                "Groups:="        , ""
+            ])
+
+        #rename group
+        oEditor.ChangeProperty(
+            [
+                "NAME:AllTabs",
+                [
+                    "NAME:Attributes",
+                    [
+                        "NAME:PropServers",
+                        assigned_name
+                    ],
+                    [
+                        "NAME:ChangedProps",
+                        [
+                            "NAME:Name",
+                            "Value:="        , group_name
+                        ]
+                    ]
+                ]
+            ])
+        
+    def add_radar_sensor(self,sensor,ref_cs):
+        base_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+        radar_base_path = f'{base_path}/radar_module/'
+        if sensor.type == "file":
+            for tx_idx in range(sensor.numTx):
+                pos = sensor.tx_pos[tx_idx]
+                if sensor.tx_has_ffd:
+                    ant_name = self.insert_antenna(f'tx_{tx_idx}',
+                                                ffd_file =radar_base_path + sensor.tx_ffd[tx_idx],
+                                                cs=ref_cs)
+                else:
+                    ant_name = self.insert_antenna(f'tx_{tx_idx}',
+                                                beamwidth_az = sensor.Tx_hpbwHorizDeg,
+                                                beamwidth_el = sensor.Tx_hpbwVertDeg,
+                                                cs=ref_cs)
+                self.move_3dcomp(ant_name,pos,units='meter')
+                
+            for rx_idx in range(sensor.numRx):
+                pos = sensor.rx_pos[rx_idx]
+                if sensor.rx_has_ffd:
+                    ant_name = self.insert_antenna(f'rx_{rx_idx}',
+                                                ffd_file =radar_base_path + sensor.rx_ffd[rx_idx],
+                                                cs=ref_cs)
+                else:
+                    ant_name = self.insert_antenna(f'rx_{rx_idx}',
+                                                beamwidth_az = sensor.Rx_Az_hpbwHorizDeg,
+                                                beamwidth_el = sensor.Rx_Az_hpbwVertDeg,
+                                                cs=ref_cs)
+                self.move_3dcomp(ant_name,pos,units='meter')
+        else: #parametric locations (defined by  spacing)
+
+            #only 1 tx supported for parametric location radar module
+            ant_name = self.insert_antenna('tx_1',
+                                        beamwidth_az = sensor.Tx_hpbwHorizDeg,
+                                        beamwidth_el = sensor.Tx_hpbwVertDeg,
+                                        cs=ref_cs)
+            self.move_3dcomp(ant_name,[0,0,0],units='meter')
+                
+            for rx_idx in range(sensor.numRx_Az):
+                pos =[0, rx_idx*sensor.Rx_Az_spacing_meter,0]
+
+                ant_name = self.insert_antenna(f'rx_az_{rx_idx}',
+                                            beamwidth_az = sensor.Rx_Az_hpbwHorizDeg,
+                                            beamwidth_el = sensor.Rx_Az_hpbwVertDeg,
+                                            cs=ref_cs)
+                self.move_3dcomp(ant_name,pos,units='meter')
+                
+            for rx_idx in range(sensor.numRx_El):
+                pos =[0, 0,rx_idx*sensor.Rx_El_spacing_meter]
+
+                ant_name = self.insert_antenna(f'rx_el_{rx_idx}',
+                                            beamwidth_az = sensor.Rx_El_hpbwHorizDeg,
+                                            beamwidth_el = sensor.Rx_El_hpbwVertDeg,
+                                            cs=ref_cs)
+                self.move_3dcomp(ant_name,pos,units='meter')

@@ -1,0 +1,28 @@
+{
+    "name": "test_env",
+    "version": 1,
+    "type": "environment",
+    "center_lat_lon": [
+        45.545029694364544,
+        -122.65121842741738
+    ],
+    "radius": 250,
+    "road_network": "test_env.road_network",
+    "parts": {
+        "terrain": {
+            "file_name": "terrain_temp.stl",
+            "color": "brown",
+            "material": "earth"
+        },
+        "buildings": {
+            "file_name": "buildings_temp.stl",
+            "color": "grey",
+            "material": "concrete"
+        },
+        "roads": {
+            "file_name": "roads_temp.stl",
+            "color": "black",
+            "material": "asphalt"
+        }
+    }
+}

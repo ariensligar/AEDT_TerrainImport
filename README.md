@@ -12,7 +12,8 @@ https://repo.anaconda.com/archive/Anaconda3-2021.05-Windows-x86_64.exe
 # Creating Environment
 
 ```
-conda create -n aedt_terrain python=3.8
+conda config --prepend channels conda-forge
+conda create -n aedt_terrain --strict-channel-priority osmnx spyder-kernels pyvista
 activate aedt_terrain 
 ```
 
